@@ -1,5 +1,3 @@
-# Yalnix-Operating-System-Kernel
-
 <Zeyu Hu, zh16; Luoqi (Rocky) Wu, lw31>
 COMP 421 Project 2: The Yalnix Operating System Kernel
 <March 29, 2019>

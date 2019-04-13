@@ -11,29 +11,35 @@
 
 
 /* MACRO Definitions */
-//#define PFN2ADDR(p)  p * PAGESIZE;
 #define TERMINATED -1
 #define RUNNING 0
 #define READY 1
 #define WAITING 2
 
+#define DelayQueue 0
+#define ReadyQueue 1
+
+#define BlockQ_0 3
+#define BlockQ_1 4
+#define BlockQ_2 5
+#define BlockQ_3 6
+
+#define Write_BlockQ_0 8
+#define Write_BlockQ_1 9
+#define Write_BlockQ_2 10
+#define Write_BlockQ_3 11
+
+
 /* Data Structure Definitions */
 // define a trap function pointer type
 typedef int (*trap_funcptr)(ExceptionInfo *);
-// pcb struct, data members to be filled
-// typedef struct pcb {
-// 	int pid;
-// 	SavedContext ctx;
-// 	int pfn_pt0; // page table 0
-// } pcb;
+
 typedef struct exit_child_block {
     int pid;
     int status;
     struct exit_child_block *next;
 } ecb;
 
-// pcb struct, data members to be filled
-// pcb struct, data members to be filled
 typedef struct pcb {
 	int pid;
 	int status;
@@ -44,17 +50,37 @@ typedef struct pcb {
 	int brk_pos;
 	void *user_stack_low_vpn;
 	struct pcb *child;
-	struct pcb *next_child; // NEW
+	struct pcb *next_child; 
 	struct pcb *sibling_q_head;
 	struct pcb *sibling_q_tail;
-	ecb *exited_childq_head; // NEW
-	ecb *exited_childq_tail; // NEW
+	ecb *exited_childq_head; 
+	ecb *exited_childq_tail; 
 	struct pcb *parent;
 
 	/* TTY stuff */
 	struct pcb *Read_BlockQ_head;
 
 } pcb;
+
+typedef struct Line
+{
+    char *ReadBuf;
+    int length;
+    struct Line *nextLine;   
+} Line;
+
+typedef struct Terminal
+{
+    int num_char;
+    Line *readterm_lineList_head;
+    Line *readterm_lineList_tail;
+    int term_writing; // 1 means a process is writing, 0 means no process is writing.
+    Line *writeterm_lineList_head;
+    Line *writeterm_lineList_tail;
+
+} Terminal;
+
+Terminal *terminal[4];
 
 /* KernelStart Routine */
 // Section 3.3, 3.6
@@ -92,9 +118,10 @@ SavedContext *MySwitchFunc(SavedContext *, void *, void *);
 
 /* Helper Routines */
 pcb *make_pcb(int pfn, int pid);
+void *Malloc(size_t size);
 
 /* Global Variables */
-//static int number_of_physical_pages;
+
 //A list to keep track of all free physical pages' indices
 int *free_physical_pages; // 1 if free, 0 if not free
 struct pte *page_table_region_0; // temporary region 0 pt for the first process
@@ -116,36 +143,13 @@ pcb *current_pcb;
 pcb *idle_pcb;
 struct pte *pt0 = (struct pte*) ((VMEM_1_LIMIT) - (2 * (PAGESIZE)));
 unsigned long total_time = 0;
+
+/* Ready and Delay queue vars */
 pcb *ready_q_head = NULL, *ready_q_tail = NULL;
 pcb *delay_q_head = NULL, *delay_q_tail = NULL;
 
 
-
-// /* TTY's */
-// typedef struct term
-// {
-//     char *BufRead[256];
-//     unsigned long num_char;
-//     char *BufWrite;
-//     struct Read_BlockQ *read_queue;
-//     struct Write_BlockQ *write_queue;
-//     int writing;
-// } Terminal;
-
-// struct term terminal_0;
-// struct term terminal_1;
-// struct term terminal_2;
-// struct term terminal_3;
-
-/* TTY stuff */
-// --------------------------------------------------------------------
-#define DelayQueue 0
-#define ReadyQueue 1
-
-#define BlockQ_0 3
-#define BlockQ_1 4
-#define BlockQ_2 5
-#define BlockQ_3 6
+/* TTY Queue Vars */
 
 pcb *Read_BlockQ_0_head = NULL;
 pcb *Read_BlockQ_0_tail = NULL;
@@ -156,52 +160,6 @@ pcb *Read_BlockQ_2_tail = NULL;
 pcb *Read_BlockQ_3_head = NULL;
 pcb *Read_BlockQ_3_tail = NULL;
 
-// pcb *Write_BlockQ_0_head = NULL;
-// pcb *Write_BlockQ_0_tail = NULL;
-
-// typedef struct Line
-// {
-//     char *ReadBuf;
-//     int length;
-//     struct Line *nextLine;   
-// } Line;
-
-// typedef struct Terminal
-// {
-//     //char *BufRead[256];
-//     int num_char;
-//     //char *BufWrite;
-//     Line *readterm_lineList_head;
-//     Line *readterm_lineList_tail;
-//     //int writing;
-// } Terminal;
-
-// Terminal *terminal[4];
-
-typedef struct Line
-{
-    char *ReadBuf;
-    int length;
-    struct Line *nextLine;   
-} Line;
-
-typedef struct Terminal
-{
-    //char *BufRead[256];
-    int num_char;
-    //char *BufWrite;
-    Line *readterm_lineList_head;
-    Line *readterm_lineList_tail;
-    int term_writing; // 1 means a process is writing, 0 means no process is writing.
-    Line *writeterm_lineList_head;
-    Line *writeterm_lineList_tail;
-
-} Terminal;
-
-Terminal *terminal[4];
-
-/* TTY Write Stuff */
-// --------------------------------------------------------------------
 
 pcb *Write_BlockQ_0_head = NULL;
 pcb *Write_BlockQ_0_tail = NULL;
@@ -212,21 +170,13 @@ pcb *Write_BlockQ_2_tail = NULL;
 pcb *Write_BlockQ_3_head = NULL;
 pcb *Write_BlockQ_3_tail = NULL;
 
-#define Write_BlockQ_0 8
-#define Write_BlockQ_1 9
-#define Write_BlockQ_2 10
-#define Write_BlockQ_3 11
-
-
-
-
-// -------------------------------------------------------------------------------------
 
 /* END OF DECLARATION */
 
 
 /* START OF IMPLEMENTATION */
 
+/* ----------------------------------KernalStart Routine------------------------------------------ */
 /* KernalStart Routine 
 	info - pointer to an initial ExceptionInfo structure
 	pmem_size - total size of the physical memory in bytes
@@ -250,24 +200,11 @@ void KernelStart(ExceptionInfo *info, unsigned int pmem_size,
 
 	TracePrintf(10, "done with free list before page table\n");
 
-	terminal[0] = (Terminal *) malloc(sizeof(Terminal));
-	terminal[1] = (Terminal *) malloc(sizeof(Terminal));
-	terminal[2] = (Terminal *) malloc(sizeof(Terminal));
-	terminal[3] = (Terminal *) malloc(sizeof(Terminal));
- 	//Tty
-
- 	// terminal[0].num_char = 0;
- 	// // Line *temp;
- 	// terminal[0].readterm_lineList_head = NULL;
- 	// terminal[1].num_char = 0;
- 	// terminal[1].readterm_lineList_head = NULL;
- 	// terminal[2].num_char = 0;
- 	// terminal[2].readterm_lineList_head = NULL;
- 	// terminal[3].num_char = 0;
- 	// terminal[3].readterm_lineList_head = NULL;
-
-
-
+	terminal[0] = (Terminal *) Malloc(sizeof(Terminal));
+	terminal[1] = (Terminal *) Malloc(sizeof(Terminal));
+	terminal[2] = (Terminal *) Malloc(sizeof(Terminal));
+	terminal[3] = (Terminal *) Malloc(sizeof(Terminal));
+ 	//Tty Initialzation
 	terminal[0]->num_char = 0;
  	terminal[0]->readterm_lineList_head = NULL;
  	terminal[1]->num_char = 0;
@@ -306,14 +243,6 @@ void KernelStart(ExceptionInfo *info, unsigned int pmem_size,
  	}
 
  	TracePrintf(9, "[KernelStart] DONE \n"); 
-
- 	// if (idle_loaded == 0) {
- 	// 	idle_loaded = 1;
- 	// 	int idle_status = LoadProgram("idle", cmd_args, exception_info);
- 			
- 	// }
-	// initialize terminals
-
 }
 
 int SetKernelBrk(void *addr) {
@@ -347,7 +276,6 @@ int SetKernelBrk(void *addr) {
 				return -1;
 			}
 			//enqueue a page
-			// TracePrintf(0, "[SetKernelBrk] Allocating more memory for vpn %")
 			page_table_region_1[current_pcb_vpn + i].pfn = allocate_new_pfn();
 			page_table_region_1[current_pcb_vpn+ i].valid = 1;
 			page_table_region_1[current_pcb_vpn + i].uprot = PROT_NONE;
@@ -363,14 +291,9 @@ int SetKernelBrk(void *addr) {
 
 void init_process(char **cmd_args, ExceptionInfo *info) {
 	// step1: create new PCB
-	pcb *init_pcb = (pcb *) malloc(sizeof(pcb));
-	if (init_pcb == NULL) {
-		fprintf(stderr, "Faliled to malloc for init process.\n");
-        exit(-1);
-	}
+	pcb *init_pcb = (pcb *) Malloc(sizeof(pcb));
 	init_pcb -> pid = 1;
 	TracePrintf(9, "init process before initializing \n");
-	// pcb -> ctx = malloc(sizeof(SavedContext)); do we need this step??
 	// initialize the pt0 field
 	init_pcb -> status = RUNNING;
 	init_pcb -> pfn_pt0 = PAGE_TABLE_LEN * 2 - 2;
@@ -389,15 +312,6 @@ void init_process(char **cmd_args, ExceptionInfo *info) {
 	// step 2: set current process to init
 	current_pcb = init_pcb;
 	TracePrintf(9, "init process before loading \n");
-
-	// step2: ContextSwitch, so that init_pcb has a copy of the current SavedContext
-	//ContextSwitch(MySwitchFunc, &init_pcb->ctx, init_pcb, init_pcb);
-
-	// step3: load init
-	//ExceptionInfo *info = malloc(sizeof(ExceptionInfo));
-
-	// int loaded = LoadProgram(cmd_args[0], cmd_args, info);
-	// TracePrintf(9, "Status of init loaded is %d\n", loaded);
 	TracePrintf(9, "[init_process] DONE \n"); 
 }
 
@@ -405,22 +319,6 @@ void init_process(char **cmd_args, ExceptionInfo *info) {
 void idle_process(char **cmd_args) {
 	idle_pcb = make_pcb(allocate_new_pfn(), 0);
 	idle_pcb -> pid = 0;
-	// // step1: create new PCB
-	// pcb *idle_pcb = (pcb *) malloc(sizeof(pcb));
-	// idle_pcb -> pid = 0;
-
-	// // step2: allocate new free physical page to new process's pt0
-	// idle_pcb -> pfn_pt0 = allocate_new_pfn();
-	// //current_pcb = idle_pcb;
-
-	// // step3: context switch to itself idle so we have savedContext for idle
-	// ContextSwitch(MySwitchFunc, &idle_pcb->ctx, idle_pcb, idle_pcb);
-
-	// // step3: ContextSwitch, copy kernel stack - find new free pages for kernel stack
-	// ContextSwitch(MySwitchFunc, &init_pcb->ctx, init_pcb, idle_pcb);
-	// pt1[] after context switch to idle
-
-	// step4: load idle
 	TracePrintf(9, "[idle_process] DONE \n"); 
 
 }
@@ -430,8 +328,7 @@ void InitInterruptVectorTable() {
 	int j;
 	// Interrupt vector Table: An array of pointers to functions whose input is *ExceptionInfo.
 	// Make it locate at the 510th (3rd to last) page of region 1 memory!
-	//trap_funcptr *InterruptVectorTable = VMEM_1_LIMIT - 3 * PAGESIZE;
-	trap_funcptr *InterruptVectorTable = malloc(TRAP_VECTOR_SIZE * sizeof(trap_funcptr));
+	trap_funcptr *InterruptVectorTable = Malloc(TRAP_VECTOR_SIZE * sizeof(trap_funcptr));
 	
 	// Define each element in the Table.
 	InterruptVectorTable[TRAP_KERNEL] = trap_kernel;
@@ -455,8 +352,8 @@ void InitInterruptVectorTable() {
 void initFreePhysicalPages(unsigned int pmem_size) {
 	total_pages = DOWN_TO_PAGE(pmem_size) >> PAGESHIFT;
 	
-	// TODO: move the list to the semi-top of region 1!
-	free_physical_pages = malloc(total_pages * sizeof(int));
+	//move the list to the semi-top of region 1!
+	free_physical_pages = Malloc(total_pages * sizeof(int));
 
 	// some stuff with invalid memory
 	int page_iter;
@@ -488,18 +385,10 @@ void initFreePhysicalPages(unsigned int pmem_size) {
 void initPageTable() {
 	TracePrintf(10, "start of page table\n");
 	//initialize region 1 & region 0 page table
-	// step1: compute number of entries in each page table
-	// int num_entries_0 = DOWN_TO_PAGE(VMEM_0_SIZE) >> PAGESHIFT;
-	// int num_entries_1 = DOWN_TO_PAGE(VMEM_1_SIZE) >> PAGESHIFT;
-	// page_table_region_0 = malloc(num_entries_0 * sizeof(struct pte));
-	// page_table_region_1 = malloc(num_entries_1 * sizeof(struct pte));
-	//page_table_region_0 = malloc(PAGE_TABLE_LEN * sizeof(struct pte));
-	//page_table_region_1 = malloc(PAGE_TABLE_LEN * sizeof(struct pte));
 
 	// make the initial pt0 and pt1 live on the top of region 1
 	page_table_region_0 = (struct pte*) (VMEM_1_LIMIT - PAGESIZE * 2);
 	page_table_region_1 = (struct pte*) (VMEM_1_LIMIT - PAGESIZE);
-	//TracePrintf(10, "done with page table region 0 address: %p\n", page_table_region_0);
 	
 	// step2: fill in the entries with struct pte
 	// first fill in the kernel stack for user process in region 0
@@ -513,7 +402,6 @@ void initPageTable() {
 		//TracePrintf(10, "page table region 0 : %p\n", page_table_region_0);
 
 	}
-	//TracePrintf(10, "done with page table part 1\n");
 
 	// then fill in the kernel text, data, bss, and heap in region 1
 	int pt_iter1;
@@ -529,7 +417,6 @@ void initPageTable() {
 			// KERNEL data/bss/heap
 			page_table_region_1[pt_iter1].kprot = (PROT_READ | PROT_WRITE);
 		}
-		//TracePrintf(10, "pt vpn is %d\n", pt_iter1 + 512);
 	}
 	TracePrintf(10, "done with page table part 2\n");
 
@@ -542,19 +429,6 @@ void initPageTable() {
 	page_table_region_1[PAGE_TABLE_LEN-2].uprot = PROT_NONE;
 	page_table_region_1[PAGE_TABLE_LEN-2].kprot = PROT_READ|PROT_WRITE;
 
-	// step3: certain entries might need to be modified, skipped for now
-	// mark the top n pages of region 1 as invalid
-
-	// step4: update the free_physical_pages list!
-	// int free_iter;
-	// int kernel_pages = KERNEL_STACK_PAGES + (((int) end_of_kernel_heap - VMEM_1_BASE) >> PAGESHIFT);
-	// for (free_iter = PAGE_TABLE_LEN - KERNEL_STACK_PAGES; free_iter < free_physical_pages - kernel_pages;
-	// 	free_iter++) {
-	// 	free_physical_pages[free_iter] = free_iter + kernel_pages;
-	// }
-	// free_pages_counter = free_iter;
-	// TracePrintf(10, "done with page table\n");
-
 	//initialize REG_PTR0 and REG_PTR1
 	WriteRegister(REG_PTR0, (RCS421RegVal) page_table_region_0);
 	WriteRegister(REG_PTR1, (RCS421RegVal) page_table_region_1);
@@ -565,10 +439,10 @@ void enable_virtual_memory() {
 	WriteRegister(REG_VM_ENABLE, 1);
 	vm_enabled = 1;
 }
+/* ----------------------------------KernalStart Routine END------------------------------------------ */
 
 
-/* Helper Routines */
-
+/* ----------------------------------Helper Routines------------------------------------------ */
 void linkedList_add(int queueNumber, pcb *add) {
 	TracePrintf(0,"linkedList_add\n");
 	// add to delay queue
@@ -580,7 +454,6 @@ void linkedList_add(int queueNumber, pcb *add) {
         	delay_q_head = add;
         	delay_q_tail = add;
         }
-
         else {
 	        pcb *running_proc = delay_q_head;
 	        pcb *next_proc = delay_q_head->nextProc;
@@ -609,7 +482,6 @@ void linkedList_add(int queueNumber, pcb *add) {
 	 				// case4: increment the pointer and keep on searching
 	 				else {
 	 					running_proc = next_proc;
-	 					//pcb *nextProcess = next_proc->nextProc;
 	 					TracePrintf(0, "next_proc PID is %d\n ", next_proc->pid);
 	 					if (next_proc->nextProc == NULL) {
 	 						TracePrintf(0, "next_proc->nextProc is NULL %d\n ");
@@ -619,8 +491,6 @@ void linkedList_add(int queueNumber, pcb *add) {
 	 					
 	 					TracePrintf(0, "delay_q_head pid is: %d\n ", delay_q_head->pid);
 	 					TracePrintf(0, "delay_q_tail pid is: %d\n ", delay_q_tail->pid);
-	 					//TracePrintf(0, "next_proc->nextProc PID is %d\n ", nextProcess->pid);
-
 	 					next_proc = next_proc->nextProc;
 	 				}
 
@@ -651,7 +521,7 @@ void linkedList_add(int queueNumber, pcb *add) {
 		current_pcb->sibling_q_tail = add;
 	}
 
-	// add to BlockQ_0
+	// add to read BlockQ_0
 	else if (queueNumber == BlockQ_0) {
 		if (Read_BlockQ_0_head == NULL) {
 			Read_BlockQ_0_head = add;
@@ -661,7 +531,7 @@ void linkedList_add(int queueNumber, pcb *add) {
 		}
 		Read_BlockQ_0_tail = add;		
 	}
-	// add to BlockQ_2
+	// add to read BlockQ_2
 	else if (queueNumber == BlockQ_2) {
 		if (Read_BlockQ_2_head == NULL) {
 			Read_BlockQ_2_head = add;
@@ -672,7 +542,7 @@ void linkedList_add(int queueNumber, pcb *add) {
 		Read_BlockQ_2_tail = add;		
 	}
 
-	// add to BlockQ_1
+	// add to read BlockQ_1
 	else if (queueNumber == BlockQ_1) {
 		if (Read_BlockQ_1_head == NULL) {
 			Read_BlockQ_1_head = add;
@@ -683,7 +553,7 @@ void linkedList_add(int queueNumber, pcb *add) {
 		Read_BlockQ_1_tail = add;		
 	}
 
-	// add to BlockQ_3
+	// add to read BlockQ_3
 	else if (queueNumber == BlockQ_3) {
 		if (Read_BlockQ_3_head == NULL) {
 			Read_BlockQ_3_head = add;
@@ -745,8 +615,6 @@ void linkedList_add(int queueNumber, pcb *add) {
 void *linkedList_remove(int queueNumber) {
 	TracePrintf(0,"linkedList_remove \n");
 	// remove from delay Q
-
-
 	if (queueNumber == 0) {
 		TracePrintf(0,"linkedList_remove Q = delay \n");
 
@@ -791,7 +659,7 @@ void *linkedList_remove(int queueNumber) {
 		current_pcb->sibling_q_head = current_pcb->sibling_q_head->nextProc;
 		return returnRn;		
 	}
-
+	// remove from read BlockQ_0
 	if (queueNumber == BlockQ_0) {
 		if (Read_BlockQ_0_head == NULL) {
 			return NULL;
@@ -807,7 +675,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
-
+	// remove from read BlockQ_1
 	if (queueNumber == BlockQ_1) {
 		if (Read_BlockQ_1_head == NULL) {
 			return NULL;
@@ -823,6 +691,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
+	// remove from read BlockQ_2
 	if (queueNumber == BlockQ_2) {
 		if (Read_BlockQ_2_head == NULL) {
 			return NULL;
@@ -838,6 +707,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
+	// remove from read BlockQ_3
 	if (queueNumber == BlockQ_3) {
 		if (Read_BlockQ_3_head == NULL) {
 			return NULL;
@@ -853,7 +723,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
-
+	// remove from write BlockQ_1
 	if (queueNumber == Write_BlockQ_1) {
 		if (Write_BlockQ_1_head == NULL) {
 			return NULL;
@@ -869,7 +739,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
-
+	// remove from write BlockQ_2
 	if (queueNumber == Write_BlockQ_2) {
 		if (Write_BlockQ_2_head == NULL) {
 			return NULL;
@@ -885,6 +755,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
+	// remove from write BlockQ_3
 	if (queueNumber == Write_BlockQ_3) {
 		if (Write_BlockQ_3_head == NULL) {
 			return NULL;
@@ -900,7 +771,7 @@ void *linkedList_remove(int queueNumber) {
 			return returnRn;
 		}
 	}
-
+	// remove from write BlockQ_0
 	if (queueNumber == Write_BlockQ_0) {
 		if (Write_BlockQ_0_head == NULL) {
 			return NULL;
@@ -935,7 +806,6 @@ void *linkedList_remove(int queueNumber) {
 	pcb *returnRn = ready_q_head;
 	ready_q_head = ready_q_head->nextProc;
 	returnRn->nextProc=NULL;
-
 	return (returnRn == NULL)?idle_pcb:returnRn;	
 
 }
@@ -953,19 +823,8 @@ int allocate_new_pfn() {
 		}
 	}
 
-	// 	for (page_counter = 0; page_counter < total_pages; page_counter++) {
-	// 	int page_index = (free_pages_pointer + page_counter) % total_pages;
-	// 	if (free_physical_pages[page_index] == 1) {
-	// 		free_pages_pointer = page_index + 1;
-	// 		free_physical_pages[page_index] = 0;
-	// 		free_pages_counter--;
-	// 		return page_index;
-	// 	}
-	// }
 	TracePrintf(0, "No new pfn left!\n");
 	return -1;
-	//int index = free_physical_pages[--free_pages_counter];
-	//return (void *)(index * PAGESIZE);
 }
 
 void deallocate_new_pfn(int pfn) {
@@ -975,57 +834,122 @@ void deallocate_new_pfn(int pfn) {
 
 
 void print_free_list() {
-	//TracePrintf(9, "%d\n", total_pages);
 	int j;
 	for (j = 0; j < total_pages; j++) {
 		TracePrintf(9, "free list entry[%d]: %d\n", j, free_physical_pages[j]);
 	}
 }
 
+// Determine which terminal's write block queue should we go to
+pcb *whichWrite_Head(int term) {
+	pcb *Write_BlockQ;
+    	if (term == 0) {
+    		Write_BlockQ = Write_BlockQ_0_head;
+    	} else if (term == 1) {
+    		Write_BlockQ = Write_BlockQ_1_head;
+    	} else if (term == 2) {
+    		Write_BlockQ = Write_BlockQ_2_head;
+    	} else if (term == 3) {
+    		Write_BlockQ = Write_BlockQ_3_head;
+    	}
+    return Write_BlockQ;
+}
 
+// make pcb
+pcb *make_pcb(int pfn, int pid) {
+
+    pcb *process = Malloc(sizeof(pcb));
+	process->pid = pid;
+	process->status = READY; // NEW
+	process->pfn_pt0 = pfn;
+	process->nextProc = NULL;
+	process->switchTime = total_time + 2;
+    process->brk_pos = region0_brk;
+    process->user_stack_low_vpn = current_pcb->user_stack_low_vpn;
+    process->child = NULL;
+    process->parent = pid>1 ? current_pcb : NULL;	// NEW
+    process->next_child = NULL;					// NEW
+  	process->sibling_q_head = NULL;
+	process->sibling_q_tail = NULL; 
+	process->exited_childq_head = NULL;			// NEW
+	process->exited_childq_tail = NULL;			// NEW
+    ContextSwitch(MySwitchFunc, &process->ctx, process, process);
+
+  
+    TracePrintf(0,"[make_pcb] DONE\n");
+    return process;
+}
+
+
+// Determine which terminal's read block queue should we go to
+pcb *whichHead(int term) {
+	pcb *BlockQ_head;
+    	if (term == 0) {
+    		BlockQ_head = Read_BlockQ_0_head;
+    	} else if (term == 1) {
+    		BlockQ_head = Read_BlockQ_1_head;
+    	} else if (term == 2) {
+    		BlockQ_head = Read_BlockQ_2_head;
+    	} else if (term == 3) {
+    		BlockQ_head = Read_BlockQ_3_head;
+    	}
+    return BlockQ_head;
+}
+
+
+
+void lineList_add(int term, Line *line_to_add) {
+	if (terminal[term]->readterm_lineList_head == NULL && terminal[term]->readterm_lineList_tail == NULL) {
+		TracePrintf(0, "Line head is null\n");
+		TracePrintf(0, "Line to add has length %d\n", line_to_add->length);
+		terminal[term]->readterm_lineList_head = line_to_add;
+		TracePrintf(0, "Length of head is %d\n", terminal[term]->readterm_lineList_head->length);
+		terminal[term]->readterm_lineList_tail = line_to_add;
+	}
+	else {
+		TracePrintf(0, "Line head is NOT NULL\n");
+		terminal[term]->readterm_lineList_tail->nextLine = line_to_add;
+		terminal[term]->readterm_lineList_tail = line_to_add;		
+	}
+}
+	
+
+/* ----------------------------------Helper Routines Ends------------------------------------------ */
 // Custom context switch function
 SavedContext *MySwitchFunc(SavedContext *ctxp, void *p1, void *p2) {
 	pcb *pcb1 = (pcb *) p1;
 	pcb *pcb2 = (pcb *) p2;
 	TracePrintf(9, "Entering MySwitchFunc\n");
-	// print_free_list();
 
 	// case1: copy kernel stack if p1 and p2 are the same from the current kernel stack (e.g. copy init's to idle)
 	if (pcb1 == pcb2) {
 		TracePrintf(9, "MySwitchFunc case 1 start\n");
 		// find a new physical page, copy 1 page from p1 kernel stack to that page, make 
 		int stack_counter;
-		//int empty_pfn;
+
 		for (stack_counter = 0; stack_counter < 4; stack_counter++) {
 			// find a new physical page, copy 1 page from p1 kernel stack to that page
-			//TracePrintf(9, "MySwitchFunc allocate empty pfn start\n");
 			int empty_pfn = allocate_new_pfn();
-			//TracePrintf(9, "empty_pfn is %d\n", empty_pfn);
-			//TracePrintf(9, "empty pfn: %d\n", empty_pfn);
+
 			int empty_addr = empty_pfn * PAGESIZE;
-			//TracePrintf(9, "MySwitchFunc allocate empty pfn ends\n");
+			
 			// map a free vpn to emtpy_pfn so that
 			int free_vpn = current_pcb->brk_pos;
-			// TracePrintf(0, "MySwitchFunc the free vpn is %d\n", free_vpn);
-			// TracePrintf(9, "MySwitchFunc emtpy pfn starts\n");
+
 			pt0[free_vpn].pfn = empty_pfn;
-			//TracePrintf(9, "MySwitchFunc emtpy pfn ends\n");
+
 			((struct pte*) pt0)[free_vpn].uprot = PROT_NONE;
 			((struct pte*) pt0)[free_vpn].kprot = (PROT_READ | PROT_WRITE);
 			((struct pte*) pt0)[free_vpn].valid = 1;
 			WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-			//TracePrintf(9, "MySwitchFunc memcpy start\n");
+
 			// empty virtual addrr at vpn * PAGESIZE, copy this page to empty_pfn
 			memcpy((void *) (free_vpn * PAGESIZE), (void *) (VMEM_0_LIMIT - (stack_counter + 1) * PAGESIZE), PAGESIZE);
-			// TracePrintf(9, "Address of VPN 508 is %p\n",(VMEM_0_LIMIT - (stack_counter + 1) * PAGESIZE) );
-			//TracePrintf(9, "MySwitchFunc memcpy done\n");
+
 
 			// make free_vpn point to pcb1's physical pt0
 			((struct pte*) pt0)[free_vpn].pfn = pcb1 -> pfn_pt0;
 			WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-			//TracePrintf(9, "pcb->pfn_pt0 %d\n", pcb1->pfn_pt0);
-
-
 			// finally modify the kernel stack entry in pcb1's pt0
 			((struct pte*) (free_vpn * PAGESIZE))[PAGE_TABLE_LEN - 1 - stack_counter].pfn = empty_pfn;
 			((struct pte*) (free_vpn * PAGESIZE))[PAGE_TABLE_LEN - 1 - stack_counter].uprot = PROT_NONE;
@@ -1035,12 +959,9 @@ SavedContext *MySwitchFunc(SavedContext *ctxp, void *p1, void *p2) {
 			WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
 
 			struct pte* addr = ((free_vpn<<PAGESHIFT)+(PAGE_TABLE_LEN - 1 - stack_counter)*(sizeof(struct pte)));
-			//TracePrintf(9, "OLD VPN 508 has pfn %d\n", addr->pfn);
 			// zero out this pt0 entry in the current process to be consistent
 			((struct pte*) pt0)[free_vpn].valid = 0;
 			WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-			// ((struct pte*) pt0)[free_vpn].pfn = 250;
-
 
 			TracePrintf(9, "mySwitchFunc case 1 done\n");
 		}
@@ -1064,17 +985,6 @@ SavedContext *MySwitchFunc(SavedContext *ctxp, void *p1, void *p2) {
 	        for (itr = MEM_INVALID_PAGES; itr < (VMEM_REGION_SIZE >> PAGESHIFT); itr++) {
 	            if (pt0[itr].valid) deallocate_new_pfn(itr);
 	        }
-
-	        // free child exit infos
-	        ecb *current = pcb1 -> exited_childq_head;
-	        while (current != NULL) {
-	        	ecb *next = current -> next;
-	        	free(current);
-	        	current = next;
-	        }
-	        // free pcb
-	        free(pcb1);
-	        
 	        if (pcb2 == idle_pcb) {
 	        	if (delay_q_head == NULL && ready_q_head == NULL && Read_BlockQ_0_head == NULL && Read_BlockQ_1_head == NULL && Read_BlockQ_2_head == NULL && Read_BlockQ_3_head == NULL) {
 	        		Halt();
@@ -1082,75 +992,32 @@ SavedContext *MySwitchFunc(SavedContext *ctxp, void *p1, void *p2) {
 	 			}
 	        }
 		}
-
-
-		
-
-		//TracePrintf(9, "Old VPN 508 has valid bit %d\n", pt0[509].pfn);
 		WriteRegister(REG_PTR0, (RCS421RegVal) (pcb2 -> pfn_pt0) << PAGESHIFT);
 		page_table_region_1[PAGE_TABLE_LEN - 2].pfn = pcb2 -> pfn_pt0;
 
 		WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_ALL);
 		current_pcb = pcb2;
-		// TracePrintf(9, "The new pcb has pfn %d\n", );
-		// TracePrintf(9, "The current process has pid %d\n", current_pcb->pid);
-		
-		// TracePrintf(9, "New VPN 508 has valid bit %d\n", pt0[509].pfn);
-
-		// just testing, comment this out afterwards
-
-		// int free_vpn = (UP_TO_PAGE(region0_brk)) >> PAGESHIFT;
-		
-		// ((struct pte*) pt0)[free_vpn].pfn = 0;
-		// WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-		// struct pte* addr = ((free_vpn<<PAGESHIFT)+508*(sizeof(struct pte)));
-		// TracePrintf(9, "New VPN 508 has pfn %d\n", addr->pfn);
 		TracePrintf(9, "mySwitchFunc case 2 done\n");
 		return &(pcb2 -> ctx);
 	}
 }
 
-// make pcb
-pcb *make_pcb(int pfn, int pid) {
 
-    pcb *process = malloc(sizeof(pcb));
-    if (process == NULL) {
-        fprintf(stderr, "PCB malloc failed\n");
-        return NULL;
-    }
-
-    // process->ctx = calloc(1, sizeof(SavedContext));
-
-    // if (process->ctx == NULL) {
-    //     fprintf(stderr, "new program ctx malloc failed\n");
-    //     return NULL;
-    // }
-
-	process->pid = pid;
-	process->status = READY; // NEW
-	process->pfn_pt0 = pfn;
-	process->nextProc = NULL;
-	process->switchTime = total_time + 2;
-    process->brk_pos = region0_brk;
-    process->user_stack_low_vpn = current_pcb->user_stack_low_vpn;
-    process->child = NULL;
-    process->parent = pid>1 ? current_pcb : NULL;	// NEW
-    process->next_child = NULL;					// NEW
-  	process->sibling_q_head = NULL;
-	process->sibling_q_tail = NULL; 
-	process->exited_childq_head = NULL;			// NEW
-	process->exited_childq_tail = NULL;			// NEW
-    ContextSwitch(MySwitchFunc, &process->ctx, process, process);
-
-  
-    TracePrintf(0,"[make_pcb] DONE\n");
-    return process;
+// error checking wrapper for malloc
+void *Malloc(size_t size) {
+	void *mal = malloc(size);
+	if (mal == NULL) {
+		fprintf(stderr, "Malloc error.\n");
+		Exit(ERROR);
+	} else {
+		return mal;
+	}
 }
 
 
 /* END of Kernel Start Sub-Routines */
 
-/************************************DAT WALL************************************/
+/************************************Trap Handlers************************************/
 
 /* Trap Handlers */
 // Section 3.2
@@ -1162,25 +1029,25 @@ void trap_kernel(ExceptionInfo *info) {
  if (call_type == YALNIX_FORK) {
      TracePrintf(0, "Fork()\n");
      info->regs[0] = Fork();
-     //Halt();
+
      return;
  }
  else if (call_type == YALNIX_EXEC) {
      TracePrintf(0, "Exec()\n");
      info->regs[0] = ExecFunc((char *)(info->regs[1]), (char **)(info->regs[2]), info);
-     //Halt();
+
      return;
  }
  else if (call_type == YALNIX_EXIT) {
      TracePrintf(0, "Exit()\n");
      Exit((int)info->regs[1]);
-     //Halt();
+
      return;
  }
  else if (call_type == YALNIX_WAIT) {
      TracePrintf(0, "Wait()\n");
      info->regs[0] = Wait(info->regs[1]);
-     //Halt();
+
      return;
  }
  else if (call_type == YALNIX_GETPID) {
@@ -1191,24 +1058,24 @@ void trap_kernel(ExceptionInfo *info) {
  else if (call_type == YALNIX_BRK) {
      TracePrintf(0, "Brk()\n");
      info->regs[0] = Brk((void *)info->regs[1]);
-     //Halt();
+
      return;
  }
  else if (call_type == YALNIX_DELAY) {
      TracePrintf(0, "Delay()\n");
      info->regs[0] = Delay((int)info->regs[1]);
-     return; 
+
  }
  else if (call_type == YALNIX_TTY_READ) {
      TracePrintf(0, "TTY_READ()\n");
      info->regs[0] = TtyRead(info->regs[1], info->regs[2], info->regs[3]);
-     //Halt();
+
      return; 
  }
  else if (call_type == YALNIX_TTY_WRITE) {
      TracePrintf(0, "TTY_WRITE()\n");
      info->regs[0] = TtyWrite((int)(info->regs[1]), (void *)(info->regs[2]), (int)(info->regs[3]));
-     //Halt();
+
      return;
  }
  else {
@@ -1216,7 +1083,6 @@ void trap_kernel(ExceptionInfo *info) {
   return;
 	}   
 }
-
 
 
 void trap_clock(ExceptionInfo *info) {
@@ -1232,28 +1098,19 @@ void trap_clock(ExceptionInfo *info) {
 		TracePrintf(0, "delay_q_head ST is %d\n", delay_q_head->switchTime);
 	}
 	
-	// TracePrintf(0, "delay_q_head ST is %s\n", delay_q_head->switchTime);
     if (delay_q_head != NULL && delay_q_head->switchTime <= total_time) {
-    	//TracePrintf(0, "HERE33");
     	pcb *temp = linkedList_remove(0);
     	TracePrintf(0, "delay_q_head has pid %d\n", temp->pid);
         linkedList_add(1, temp);
 		TracePrintf(0, "ready_q_head has pid %d", ready_q_head->pid);    }
-    //TracePrintf(0, "HERE44");
 
     // Function2: contextSwitch process on ready queue
 	if (current_pcb == idle_pcb || current_pcb->switchTime == total_time) {
-		//TracePrintf(0, "Bill\n");
-		// TracePrintf(0, "ready_q_head has pid %d", ready_q_head->pid);
 		if (ready_q_head != NULL) {
-			// TracePrintf(0, "HEREX11\n");
-			//TracePrintf(0, "Curreent process is %d\n", current_pcb->pid);
 			if (current_pcb == idle_pcb) {
-				//TracePrintf(0, "Current process is idle, switching to pid %d\n", ready_q_head->pid);
 				ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)linkedList_remove(1));
 			} 
 			else {
-			    //TracePrintf(0, "Context Switch for pid %d\n", current_pcb->pid);
 			    linkedList_add(1, current_pcb);
 			    ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)linkedList_remove(1));				
 			}
@@ -1272,103 +1129,47 @@ void trap_illegal(ExceptionInfo *info) {
 	char *text;
 
 	if (illegal_type == TRAP_ILLEGAL_ILLOPC) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		//TracePrintf(1, "Illegal opcode, PID is%d\n", GetPid());
 		fprintf(stderr, "Illegal opcode, PID is%d\n", GetPid());
 	}
 
 	if (illegal_type == TRAP_ILLEGAL_ILLOPN) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Illegal operand, PID is%d\n", GetPid());
 		fprintf(stderr, "Illegal operand, PID is%d\n", GetPid());
 	}
 
 	if (illegal_type == TRAP_ILLEGAL_ILLADR) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Illegal addressing mode, PID is%d\n", GetPid());
 		fprintf(stderr, "Illegal addressing mode, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_ILLTRP) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Illegal software trap, PID is%d\n", GetPid());
 		fprintf(stderr,  "Illegal software trap, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_PRVOPC) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Privileged opcode, PID is%d\n", GetPid());
 		fprintf(stderr, "Privileged opcode, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_PRVREG) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Privileged register, PID is%d\n", GetPid());
 		fprintf(stderr, "Privileged register, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_COPROC) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Coprocessor error, PID is%d\n", GetPid());
 		fprintf(stderr, "Coprocessor error, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_BADSTK) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Bad stack, PID is%d\n", GetPid());
 		fprintf(stderr, "Bad stack, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_KERNELI) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Linux kernel sent SIGILL, PID is%d\n", GetPid());
 		fprintf(stderr, "Linux kernel sent SIGILL, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_USERIB) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Received SIGILL or SIGBUS from user, PID is%d\n", GetPid());
 		fprintf(stderr, "Received SIGILL or SIGBUS from user, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_ADRALN) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Invalid address alignment, PID is%d\n", GetPid());
 		fprintf(stderr, "Invalid address alignment, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_ADRERR) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Non-existent physical address, PID is%d\n", GetPid());
 		fprintf(stderr, "Non-existent physical address, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_OBJERR) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Object-specific HW error, PID is%d\n", GetPid());
 		fprintf(stderr, "Object-specific HW error, PID is%d\n", GetPid());
 	}
 	if (illegal_type == TRAP_ILLEGAL_KERNELB) {
-		/* Terminate the currently running Yalnix user process */
-		//Pause();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Linux kernel sent SIGBUS, PID is%d\n", GetPid());
 		fprintf(stderr, "Linux kernel sent SIGBUS, PID is%d\n", GetPid());
 	}
 	TracePrintf(0,"Entered TRAP \n");
@@ -1380,35 +1181,14 @@ void trap_memory(ExceptionInfo *info) {
 	TracePrintf(0, "Address for TRAP MEMORY is %p\n", info->addr);
 	TracePrintf(0, "Page is %d\n", (int)UP_TO_PAGE(info->addr)>>PAGESHIFT);
 	TracePrintf(0, "Code for TRAP MEMORY is %p\n", info->code);
-	//Halt();
-
-	// Print error msg
 	int memory_trap_type = info->code;
-
-	if (memory_trap_type == TRAP_MEMORY_MAPERR) {
-		fprintf(stderr, "TRAP_MEMORY_MAPERR %s\n");
-	}
-	else if (memory_trap_type == TRAP_MEMORY_ACCERR) {
-		fprintf(stderr, "TRAP_MEMORY_ACCERR %s\n");
-	} 
-	else if (memory_trap_type == TRAP_MEMORY_KERNEL) {
-		fprintf(stderr, "TRAP_MEMORY_KERNEL %s\n");	
-	}
-	else if (memory_trap_type == TRAP_MEMORY_USER) {
-		fprintf(stderr, "TRAP_MEMORY_USER %s\n");			
-	}
-	else {
-		fprintf(stderr, "ERROR in trap_memory\n");
-	}
-
-
 	TracePrintf(0,"BEFORE\n");
 	void *this_addr = info->addr;
 	int this_vpn = (long)DOWN_TO_PAGE(this_addr) >> PAGESHIFT;
 	int brk_pos_vpn = current_pcb->brk_pos;
-	//int user_stack_low_vpn = (long)DOWN_TO_PAGE(current_pcb->user_stack_low_addr) >> PAGESHIFT;
 	TracePrintf(0,"AFTER\n");
 
+	//If current pcb's user stack's lowest used position is valid, we grow the user stack down
 	if (this_vpn < current_pcb->user_stack_low_vpn && this_vpn > (brk_pos_vpn + 1)) {
 		TracePrintf(0,"Entered IF: we grow \n");
 		int start = current_pcb->user_stack_low_vpn;
@@ -1427,11 +1207,26 @@ void trap_memory(ExceptionInfo *info) {
 	} 
 
 	else {
-		TracePrintf(0,"MDMDM\n");
+		// Print error msg
+		if (memory_trap_type == TRAP_MEMORY_MAPERR) {
+			fprintf(stderr, "TRAP_MEMORY_MAPERR: No mapping at addr %p\n", (int) info->addr);
+		}
+		else if (memory_trap_type == TRAP_MEMORY_ACCERR) {
+			fprintf(stderr, "TRAP_MEMORY_ACCERR: Protection violation at addr %p\n", (int) info->addr);
+		} 
+		else if (memory_trap_type == TRAP_MEMORY_KERNEL) {
+			fprintf(stderr, "TRAP_MEMORY_KERNEL: Linux kernel sent SIGSEGV at addr %p\n", (int) info->addr);	
+		}
+		else if (memory_trap_type == TRAP_MEMORY_USER) {
+			fprintf(stderr, "TRAP_MEMORY_USER: Received SIGSEGV from user.\n");			
+		}
+		else {
+			fprintf(stderr, "ERROR in trap_memory\n");
+		}
+
+		//terminate process
 		Exit(ERROR);
-		TracePrintf(0,"Exit ERROR\n");
-        // pcb *next = linkedList_remove(1);
-        // ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *) next);			
+		TracePrintf(0,"Exit ERROR\n");		
 		Halt();
 	}
 
@@ -1447,125 +1242,38 @@ void trap_math(ExceptionInfo *info) {
 	int trap_math_type = info->code;
 
 	if (trap_math_type == TRAP_MATH_INTDIV) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "integer divide by zero");
 		text = "integer divide by zero";		
 	}
 	if (trap_math_type == TRAP_MATH_INTOVF) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Integer overflow");
 		text = "Integer overflow";		
 	}
-	if (trap_math_type == TRAP_MATH_FLTDIV) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Floating divide by zero");	
+	if (trap_math_type == TRAP_MATH_FLTDIV) {	
 		text = "Floating divide by zero";	
 	}
 	if (trap_math_type == TRAP_MATH_FLTOVF) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Floating overflow");
 		text = "Floating overflow";		
 	}
 	if (trap_math_type == TRAP_MATH_FLTUND) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Floating underflow");
 		text = "Floating underflow";		
 	}
 	if (trap_math_type == TRAP_MATH_FLTRES) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Floating inexact result");	
 		text = "Floating inexact result";	
 	}
 	if (trap_math_type == TRAP_MATH_FLTINV) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Invalid floating operation");
 		text = "Invalid floating operation";
 	}
 	if (trap_math_type == TRAP_MATH_FLTSUB) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "FP subscript out of range");
 		text = "FP subscript out of range";		
 	}
 	if (trap_math_type == TRAP_MATH_KERNEL) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Linux kernel sent SIGFPE");
 		text = "Linux kernel sent SIGFPE";		
 	}
 	if (trap_math_type == TRAP_MATH_USER) {
-		/* Terminate the currently running Yalnix user process */
-		//Halt();
-		/* print error msg based on PID */
-		// TracePrintf(1, "Received SIGFPE from user");
 		text = "Received SIGFPE from user";		
 	}
 	fprintf(stderr, "TRAP_MATH: %s\n", text);
-	//ContextSwitch(MySwitchFunc, current_pcb -> ctx, (void *) current_pcb, (void *)linkedList_remove(ReadyQueue));
-
     Exit(ERROR);
 }
-
-
-
-
-void lineList_add(int term, Line *line_to_add) {
-
-
-	if (terminal[term]->readterm_lineList_head == NULL && terminal[term]->readterm_lineList_tail == NULL) {
-		TracePrintf(0, "Line head is null\n");
-		TracePrintf(0, "Line to add has length %d\n", line_to_add->length);
-		terminal[term]->readterm_lineList_head = line_to_add;
-		TracePrintf(0, "Length of head is %d\n", terminal[term]->readterm_lineList_head->length);
-		terminal[term]->readterm_lineList_tail = line_to_add;
-	}
-	else {
-		TracePrintf(0, "Line head is NOT NULL\n");
-		terminal[term]->readterm_lineList_tail->nextLine = line_to_add;
-		terminal[term]->readterm_lineList_tail = line_to_add;		
-	}
-
-
-}
-	
-
-pcb *whichHead(int term) {
-	pcb *BlockQ_head;
-    	if (term == 0) {
-    		BlockQ_head = Read_BlockQ_0_head;
-    	} else if (term == 1) {
-    		BlockQ_head = Read_BlockQ_1_head;
-    	} else if (term == 2) {
-    		BlockQ_head = Read_BlockQ_2_head;
-    	} else if (term == 3) {
-    		BlockQ_head = Read_BlockQ_3_head;
-    	}
-    return BlockQ_head;
-}
-
-// Line *whichHeadLine(int term) {
-// 	Line *BlockQ_head;
-    	
-//     return BlockQ_head;
-// }
-
-
 
 
 void trap_tty_receive(ExceptionInfo *info) {
@@ -1580,13 +1288,13 @@ void trap_tty_receive(ExceptionInfo *info) {
 
 	int addition_char;
 	//copy to terminal 0 Read Buffer
-	char *buf = (char*) malloc(TERMINAL_MAX_LINE * sizeof(char));
+	char *buf = (char*) Malloc(TERMINAL_MAX_LINE * sizeof(char));
 	//buf = current_terminal->BufRead + current_terminal->num_char;
 	addition_char = TtyReceive(term_num, buf, TERMINAL_MAX_LINE);
     //update number of chars can be read
     current_terminal->num_char += addition_char;
     // build a new line struct for the newly read line
-    Line *new_line = malloc(sizeof(Line));
+    Line *new_line = Malloc(sizeof(Line));
     new_line->ReadBuf = buf;
     new_line->length = addition_char;
     new_line->nextLine = NULL;
@@ -1603,8 +1311,6 @@ void trap_tty_receive(ExceptionInfo *info) {
     if (terminal[term_num]->readterm_lineList_head == NULL) {
     	TracePrintf(0, "First IS NULLLLLLL\n");
     }    
-    //TracePrintf (0, "Head of line list has length %d\n", first->length);
-
 
     TracePrintf(1, "HERE33 \n");
 
@@ -1625,9 +1331,119 @@ void trap_tty_receive(ExceptionInfo *info) {
     TracePrintf(1, "[trap_tty_receive] DONE \n");
 }
 
+void trap_tty_transmit(ExceptionInfo *info) {
+	TracePrintf(0, "[trap_tty_transmit], starts, pid %d\n", current_pcb->pid);
+	int term_num = info->code;
+	pcb *block_head = whichWrite_Head(term_num);
+	terminal[term_num]->term_writing = 0;
+	// add blcok queue head to readyQueue
+	if(block_head != NULL) {
+		TracePrintf(0, "trap_tty_transmit, add blcok queue head to readyQueue, blcok queue pid is %d\n", block_head->pid);
+		linkedList_add(ReadyQueue,linkedList_remove(term_num+8));
+	}
+	TracePrintf(0, "[trap_tty_transmit] DONE \n");
+};
+/************************************Trap Handlers END************************************/
+
+
+/************************************Kernel Calls*****************************************/
+
+// extern int TtyRead(int tty_id, void *buf, int len) {
+
+// 	TracePrintf(0, "Len is %d\n", len);
+
+// 	if (buf == NULL || len < 0) {
+// 		return ERROR;
+// 	}
+// 	TracePrintf(1, "HERE1 \n");
+// 	int BlockQ_number;
+// 	BlockQ_number = tty_id+3;
+// 	int result;
+
+//     // If nothing to read, add current pcb to block queue
+//     if (terminal[tty_id]->num_char == 0) {
+//     	TracePrintf(1, "nothing to read, add current pcb to block queue \n");
+//     	linkedList_add(BlockQ_number, current_pcb);
+//     	pcb* BlockQ_head = whichHead(tty_id);
+//     	TracePrintf(0, "After adding, head of block Q has pid %d\n", BlockQ_head->pid);
+//     	if (ready_q_head != NULL) {
+//     		ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)linkedList_remove(ReadyQueue));    		
+//     	} 
+//     	else {
+//  			ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)idle_pcb);   		
+//     	}
+    	
+//     }
+//     TracePrintf(1, "HERE2 \n");
+// 	int char_left_to_read;
+// 	if (terminal[tty_id]->readterm_lineList_head != NULL) {
+// 		TracePrintf(1, "Enter while loop \n");
+// 		Line *current_line_is = terminal[tty_id]->readterm_lineList_head;
+
+// 		TracePrintf(0,"The current line length is %d\n", current_line_is->length);
+// 		char_left_to_read = current_line_is->length;
+
+// 	    //copy to buf when len want to read is less than the chars in the line's Read buffer
+// 	    if (len <= current_line_is->length) {
+// 	    	TracePrintf(1, "current line has MORE characters than we can read \n");
+// 	    	memcpy(buf, current_line_is->ReadBuf, len);
+// 	    	memcpy(current_line_is->ReadBuf, current_line_is->ReadBuf + len, (current_line_is->length)-len);
+// 	    	(current_line_is->length) -= len;
+// 	    	terminal[tty_id]->num_char -=len;
+
+// 	    	// if we read the whole line, update the line linked list
+// 	    	if (current_line_is->length <= 0) {
+// 	    		TracePrintf(1, "read the whole line, update the line linked list \n");
+// 	    		terminal[tty_id]->readterm_lineList_head = current_line_is->nextLine;
+// 	    	}
+// 	    	result = len;
+// 	    } 
+// 	    // if we want to read more than what's inside the one line's read buf, look at the next line
+// 	    else {
+// 	    	TracePrintf(1, "current line has LESS characters than we can read \n");
+// 	    	int current_line_length;
+// 	    	current_line_length = current_line_is->length;
+//     		memcpy(buf, current_line_is->ReadBuf, current_line_length);
+//     		result = current_line_is->length;
+//     		(current_line_is->length) = 0;
+//     		terminal[tty_id]->num_char -= current_line_length;
+//     		char_left_to_read = 0;
+    		
+
+//     		//go to the next line
+//     		if (terminal[tty_id]->readterm_lineList_head == terminal[tty_id]->readterm_lineList_tail) {
+//     			terminal[tty_id]->readterm_lineList_head = NULL;
+//     			terminal[tty_id]->readterm_lineList_tail = NULL;
+//     		} else {
+//     			Line *temp = terminal[tty_id]->readterm_lineList_head;
+//     			terminal[tty_id]->readterm_lineList_head = terminal[tty_id]->readterm_lineList_head->nextLine;
+//     			temp->nextLine = NULL;
+//     		}
+//     		if (terminal[tty_id]->readterm_lineList_head != NULL)
+//     			TracePrintf(0, "Finished reading a line, next line has length %d\n", terminal[tty_id]->readterm_lineList_head->length);
+// 	    }
+	    
+// 	}
+// 	linkedList_remove(BlockQ_number);
+// 	return result;
+
+
+
+// }
+
 extern int TtyRead(int tty_id, void *buf, int len) {
 
 	TracePrintf(0, "Len is %d\n", len);
+	/* Check Buffer bits and validity */
+	int page_iter;
+	int prot_bit = PROT_WRITE;
+    for (page_iter = (int)(((long)buf)>>PAGESHIFT); page_iter < (int)(UP_TO_PAGE((long)buf + len)>>PAGESHIFT); page_iter++) {
+        if (!(pt0[page_iter].kprot & prot_bit) || !pt0[page_iter].valid) {
+        	fprintf(stderr, "   [TtyeRead ERROR]: invalid buffer.\n");
+        	Exit(ERROR);
+        }
+    }
+	/* End of checking buffer */
 
 	if (buf == NULL || len < 0) {
 		return ERROR;
@@ -1653,13 +1469,7 @@ extern int TtyRead(int tty_id, void *buf, int len) {
     }
     TracePrintf(1, "HERE2 \n");
 	int char_left_to_read;
-
-	//char_left_to_read = terminal[tty_id]->readterm_lineList_head->length;
-	
 	if (terminal[tty_id]->readterm_lineList_head != NULL) {
-		// if (whichHead(tty_id) == NULL) {
-		// 	break;
-		// }
 		TracePrintf(1, "Enter while loop \n");
 		Line *current_line_is = terminal[tty_id]->readterm_lineList_head;
 
@@ -1672,7 +1482,6 @@ extern int TtyRead(int tty_id, void *buf, int len) {
 	    	memcpy(buf, current_line_is->ReadBuf, len);
 	    	memcpy(current_line_is->ReadBuf, current_line_is->ReadBuf + len, (current_line_is->length)-len);
 	    	(current_line_is->length) -= len;
-	    	//char_left_to_read = ;
 	    	terminal[tty_id]->num_char -=len;
 
 	    	// if we read the whole line, update the line linked list
@@ -1709,26 +1518,11 @@ extern int TtyRead(int tty_id, void *buf, int len) {
 	    
 	}
 	linkedList_remove(BlockQ_number);
-	TracePrintf(1, "HERE3 \n");
-
-
-
-	// Switch to next process after read done.
-    // if (ready_q_head != NULL) {
-    // 	TracePrintf(1, "Switch to next process after read done. \n");
-    //    ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)linkedList_remove(ReadyQueue));
-    // }
-    TracePrintf(1, "HERE4 \n");
 	return result;
 
 
 
 }
-
-
-/* Kernel Call Implementation */
-
-
 
 extern int Delay(int clock_ticks) {
 	TracePrintf(0, "(Delay) Total time is %d\n", total_time);
@@ -1742,12 +1536,10 @@ extern int Delay(int clock_ticks) {
     	return 0;
     }
     if (ready_q_head == NULL) {
-    	//TracePrintf(0, "HERE1");
     	current_pcb->switchTime = total_time + clock_ticks;
     	linkedList_add(0, current_pcb);
     	TracePrintf(0, "First pcb in delay q has pid %d\n", delay_q_head->pid);
     	ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)idle_pcb);
-    	//TracePrintf(0, "HERE2\n");
     }
 
     else {
@@ -1775,11 +1567,6 @@ extern int Brk(void *addr) {
 		TracePrintf(0, "current process brk addr is bigger than user_stack_low_addr - 1 page");
 		return ERROR;
 	}
-
-	// if (current_pcb->user_stack_low_addr > VMEM_0_LIMIT - 5*PAGESIZE) {
-	// 	TracePrintf(0, "user_stack_low_addr is higher than VMEM_0_LIMIT - 5*PAGESIZE\n");
-	// 	return ERROR;
-	// }
 
 	// case1: set_brk bigger than brk_pos, move up 
 	if (set_brk > current_pcb->brk_pos && set_brk <= (current_pcb->user_stack_low_vpn-1)) {
@@ -1828,99 +1615,60 @@ int Fork(void) {
 	int *new_pt0 = allocate_new_pfn();
 
 	// Step2: Create a new process
-	//TracePrintf(9, "process_id is: %d\n", process_id);
 	int new_pid = process_id++;
 
 	int stack_counter;
-	//TracePrintf(9, "NewPID is: %d\n", new_pid);
-	//void *pt0_physical_addr = new_pt0 * PAGESIZE;
 	pcb *new_processPCB = make_pcb(new_pt0, new_pid);
 	new_processPCB->brk_pos = current_pcb->brk_pos;
 
-	//TracePrintf(0, "VPN 1 of current process has valid bit %d\n", pt0[1].valid);
-
 	pcb *pcb1 = new_processPCB;
-
-
-	
 	// Step3: if child return 0
 	if (current_pcb == new_processPCB) {
 		TracePrintf(0, "<Fork> child return, pid is: %d\n", current_pcb->pid);
-		
-		// int i;
-		// for (i=16; i <=26; i++) {
-		// 	TracePrintf(0, "child stack_counter is: %d\n", i);
-		// 	TracePrintf(0, "child stack_counter Valid Bit is: %d\n", pt0[i].valid);
-		// }
-		// TracePrintf(0, "child stack_counter Valid Bit is: %d\n", pt0[506].valid);
 		return 0;
 	} else {
 		//Step4: If parent, Copy pages and ContextSwitch
 
 		pcb *pcb1 = new_processPCB;
-
-		//int stack_counter;
 		int last_page = PAGE_TABLE_LEN - KERNEL_STACK_PAGES;
 		for (stack_counter = MEM_INVALID_PAGES; stack_counter < last_page; stack_counter++) {
 			if (pt0[stack_counter].valid == 1) {
-				//TracePrintf(9, "stack_counter is: %d\n", stack_counter);
-				//TracePrintf(9, "Fork allocate empty pfn start\n");
 				int empty_pfn = allocate_new_pfn();
-				// TracePrintf(9, "empty_pfn is %d\n", empty_pfn);
-				// TracePrintf(9, "empty pfn: %d\n", empty_pfn);
-				int empty_addr = empty_pfn * PAGESIZE;
-				//TracePrintf(9, "Fork allocate empty pfn ends\n");
-				
-				// map a free vpn to emtpy_pfn so that
-				// int free_vpn = 150;
+				int empty_addr = empty_pfn * PAGESIZE;	
+				// map a free vpn to emtpy_pfn
+
 				int free_vpn = current_pcb->brk_pos;
-				//TracePrintf(9, "VPN to copy is %d\n", stack_counter);
+				
 				TracePrintf(9, "Free vpn is %d\n", free_vpn);
 
 				pt0[free_vpn].pfn = empty_pfn;
-				//TracePrintf(9, "Fork emtpy pfn ends\n");
+				
 				((struct pte*) pt0)[free_vpn].uprot = (PROT_READ | PROT_EXEC);
 				((struct pte*) pt0)[free_vpn].kprot = (PROT_READ | PROT_WRITE);
 				((struct pte*) pt0)[free_vpn].valid = 1;
 				WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-				//TracePrintf(9, "Forkmemcpy start\n");
+
 				// empty virtual addrr at vpn * PAGESIZE, copy this page to empty_pfn
 				memcpy((void *) (free_vpn * PAGESIZE), (void *) (stack_counter * PAGESIZE), PAGESIZE);
-				// TracePrintf(9, "Address of VPN 508 is %p\n",(VMEM_0_LIMIT - (stack_counter + 1) * PAGESIZE) );
-				//TracePrintf(9, "Fork memcpy done\n");
+
 
 				// make free_vpn point to pcb1's physical pt0
 				((struct pte*) pt0)[free_vpn].pfn = pcb1 -> pfn_pt0;
-				//TracePrintf(9, "pcb->pfn_pt0 %d\n", pcb1->pfn_pt0);
 
 				// Now we can modify new pt0 by accessing free_vpn
 
 				WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-				//TracePrintf(9, "pcb->pfn_pt0 %d\n", pcb1->pfn_pt0);
-
-
-
 				// finally modify the kernel stack entry in pcb1's pt0
 			    ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].pfn = empty_pfn;
-			    // ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].uprot = (PROT_READ | PROT_EXEC);
-			    // ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].kprot = (PROT_READ | PROT_WRITE);
-			    // ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].valid = 1;
 			    ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].uprot = pt0[stack_counter].uprot;
 			    ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].kprot = pt0[stack_counter].kprot;
 			    ((struct pte*) (free_vpn * PAGESIZE))[stack_counter].valid = pt0[stack_counter].valid;
 
 				WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-
-				//struct pte* addr = ((free_vpn<<PAGESHIFT)+(stack_counter)*(sizeof(struct pte)));
-				//TracePrintf(9, "OLD VPN 508 has pfn %d\n", addr->pfn);
 				// zero out this pt0 entry in the current process to be consistent
 				((struct pte*) pt0)[free_vpn].valid = 0;
-				//((struct pte*) pt0)[free_vpn].pfn = ;
 				WriteRegister(REG_TLB_FLUSH, TLB_FLUSH_0);
-				// ((struct pte*) pt0)[free_vpn].pfn = 250;
-
-
-				
+		
 			}
 			
 		}
@@ -1933,17 +1681,13 @@ int Fork(void) {
         	child_iter -> next_child = new_processPCB;
         }
 
-		//Sibling Q stuff
 		linkedList_add(2,new_processPCB);
 
 		// enqueue two process to ready Queue
-		//TracePrintf(0, "new_processPCB PID %d\n", new_processPCB->pid);
-		//TracePrintf(0, "current_pcb PID %d\n", current_pcb->pid);
 		linkedList_add(1,new_processPCB);
 		linkedList_add(1,current_pcb);
 
 		//ContextSwitch to enable new process
-
 		ContextSwitch(MySwitchFunc, &current_pcb->ctx, (void *)current_pcb, (void *)linkedList_remove(1));
 
 		TracePrintf(0, "Returning from Fork as parent, new process PID is %d\n", new_processPCB->pid);
@@ -1955,9 +1699,40 @@ int Fork(void) {
 	}
 }
 
+// int ExecFunc(char *filename, char **argvec, ExceptionInfo *info) {
+
+// 	TracePrintf(0, "<Exec> \n", filename);
+// 	int load_success;
+// 	load_success = LoadProgram(filename, argvec, info);
+
+// 	if (load_success != 0) {
+// 		TracePrintf(0, "<Exec>: Load program failed\n");
+// 		return ERROR;
+// 	}
+// 	TracePrintf(0, "[ExecFunc] DONE\n");
+// 	return 0;
+// }
+
 int ExecFunc(char *filename, char **argvec, ExceptionInfo *info) {
-	//if (filename > )
-	// filename 
+
+	/* Error checking if argvec has valid pointers */
+	int j = 0;
+	int flag = 0;
+	int page_iter = (int)(((long) argvec) >> PAGESHIFT);
+	while (flag == 0) {
+		if ((!pt0[page_iter].kprot & PROT_READ) || !pt0[page_iter].valid) {
+			Exit(ERROR);
+		}
+		while (j * sizeof(char *) < ((page_iter + 1) << PAGESHIFT) - (long)argvec) {
+			if (argvec[j] == NULL) {
+				flag = 1;
+				break;
+			}
+			j++;
+		}
+		page_iter++;
+	}
+	/* End of Error Checking */
 
 	TracePrintf(0, "<Exec> \n", filename);
 	int load_success;
@@ -1971,14 +1746,6 @@ int ExecFunc(char *filename, char **argvec, ExceptionInfo *info) {
 	return 0;
 }
 
-// void Exit(int number) {
-// 	fprintf(stderr, "Exit Halt() %s\n");
-// 	Halt();
-// }
-
-// 1. add next_sibling_proc 
-// 2. next_sibling_proc related stuff
-// 3. 
 void Exit(int status) {
 	TracePrintf(0, "    [EXIT] pid %d\n", current_pcb->pid);
 	current_pcb -> status = TERMINATED;
@@ -1996,7 +1763,7 @@ void Exit(int status) {
 	// if this process has a parent
 	if (current_pcb -> parent != NULL) {
 		// add this child process to its parent's ExitChild queue
-		ecb *exited_childq_block =  malloc(sizeof(ecb));
+		ecb *exited_childq_block =  Malloc(sizeof(ecb));
 		exited_childq_block -> pid = current_pcb -> pid;
 		exited_childq_block -> status = status;
 		enqueue_ecb(current_pcb -> parent, exited_childq_block);
@@ -2070,6 +1837,92 @@ int Wait(int *status_ptr) {
 
 }
 
+// int TtyWrite(int tty_id, void *buf, int len) {
+// 	TracePrintf(0, "[TtyWrite] Starts \n");
+// 	pcb *block_head = whichWrite_Head(tty_id);
+// 	if (len < 0) {
+// 		return ERROR;
+// 	}
+// 	if (len == 0) {
+// 		return 0;
+// 	}
+// 	TracePrintf(0, "[TtyWrite] HERE1 \n");
+// 	// if there the terminal is writing, add current pcb to block queue
+// 	TracePrintf(0, "terminal[tty_id]->term_writing is  %d\n", terminal[tty_id]->term_writing);
+//     if (terminal[tty_id]->term_writing == 1) {
+//     	TracePrintf(0, "if there the terminal is writing \n");
+//     	// add to block queue
+//     	linkedList_add(tty_id+8, current_pcb);
+//     	if (ready_q_head != NULL) {
+//     		TracePrintf(0, "[TtyWrite] ContextSwitch1 \n");
+//     		ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, linkedList_remove(ReadyQueue));
+//     	} else {
+//     		TracePrintf(0, "[TtyWrite] ContextSwitch2 \n");
+//     		ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, idle_pcb);
+//     	}
+    	
+//     }
+//     TracePrintf(0, "[TtyWrite] HERE2 \n");
+//     // otherwise ttyTransmit
+//     terminal[tty_id]->term_writing = 1;
+//     char *bufTemp = (char*) Malloc(TERMINAL_MAX_LINE * sizeof(char));
+//     memcpy(bufTemp, buf, len);
+//     TracePrintf(0, "[TtyWrite] Before TtyTransmit \n");
+//     TtyTransmit(tty_id, bufTemp, len);
+//     TracePrintf(0, "[TtyWrite] After TtyTransmit \n");
+// 	TracePrintf(0, "[TtyWrite] DONE \n");    
+//     return len;
+// }
+
+int TtyWrite(int tty_id, void *buf, int len) {
+	TracePrintf(0, "[TtyWrite] Starts \n");
+	/* Check Buffer bits and validity */
+	int page_iter;
+	int prot_bit = PROT_READ;
+    for (page_iter = (int)(((long)buf)>>PAGESHIFT); page_iter < (int)(UP_TO_PAGE((long)buf + len)>>PAGESHIFT); page_iter++) {
+        if (!(pt0[page_iter].kprot & prot_bit) || !pt0[page_iter].valid) {
+        	fprintf(stderr, "   [TtyeWrite ERROR]: invalid buffer.\n");
+        	Exit(ERROR);
+        }
+    }
+	/* End of checking buffer */
+
+	pcb *block_head = whichWrite_Head(tty_id);
+	if (len < 0) {
+		return ERROR;
+	}
+	if (len == 0) {
+		return 0;
+	}
+	TracePrintf(0, "[TtyWrite] HERE1 \n");
+	// if there the terminal is writing, add current pcb to block queue
+	TracePrintf(0, "terminal[tty_id]->term_writing is  %d\n", terminal[tty_id]->term_writing);
+    if (terminal[tty_id]->term_writing == 1) {
+    	TracePrintf(0, "if there the terminal is writing \n");
+    	// add to block queue
+    	linkedList_add(tty_id+8, current_pcb);
+    	if (ready_q_head != NULL) {
+    		TracePrintf(0, "[TtyWrite] ContextSwitch1 \n");
+    		ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, linkedList_remove(ReadyQueue));
+    	} else {
+    		TracePrintf(0, "[TtyWrite] ContextSwitch2 \n");
+    		ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, idle_pcb);
+    	}
+    	
+    }
+    TracePrintf(0, "[TtyWrite] HERE2 \n");
+    // otherwise ttyTransmit
+    terminal[tty_id]->term_writing = 1;
+    char *bufTemp = (char*) Malloc(TERMINAL_MAX_LINE * sizeof(char));
+    memcpy(bufTemp, buf, len);
+    TracePrintf(0, "[TtyWrite] Before TtyTransmit \n");
+    TtyTransmit(tty_id, bufTemp, len);
+    TracePrintf(0, "[TtyWrite] After TtyTransmit \n");
+	TracePrintf(0, "[TtyWrite] DONE \n");    
+    return len;
+}
+
+/************************************Kernel Calls END*****************************************/
 
 /*
  *  Load a program into the current process's address space.  The
@@ -2433,82 +2286,3 @@ LoadProgram(char *name, char **args, ExceptionInfo *info)
     return (0);
 }
 
-
-/* --------------------------TtyWrite Stuff------------------------------ */
-
-
-pcb *whichWrite_Head(int term) {
-	pcb *Write_BlockQ;
-    	if (term == 0) {
-    		Write_BlockQ = Write_BlockQ_0_head;
-    	} else if (term == 1) {
-    		Write_BlockQ = Write_BlockQ_1_head;
-    	} else if (term == 2) {
-    		Write_BlockQ = Write_BlockQ_2_head;
-    	} else if (term == 3) {
-    		Write_BlockQ = Write_BlockQ_3_head;
-    	}
-    return Write_BlockQ;
-}
-
-void trap_tty_transmit(ExceptionInfo *info) {
-	TracePrintf(0, "[trap_tty_transmit], starts, pid %d\n", current_pcb->pid);
-	int term_num = info->code;
-	pcb *block_head = whichWrite_Head(term_num);
-	terminal[term_num]->term_writing = 0;
-	// add blcok queue head to readyQueue
-	if(block_head != NULL) {
-		TracePrintf(0, "trap_tty_transmit, add blcok queue head to readyQueue, blcok queue pid is %d\n", block_head->pid);
-		linkedList_add(ReadyQueue,linkedList_remove(term_num+8));
-	}
-	TracePrintf(0, "[trap_tty_transmit] DONE \n");
-};
-
-int TtyWrite(int tty_id, void *buf, int len) {
-	TracePrintf(0, "[TtyWrite] Starts \n");
-	pcb *block_head = whichWrite_Head(tty_id);
-	if (len < 0) {
-		return ERROR;
-	}
-	if (len == 0) {
-		return 0;
-	}
-	TracePrintf(0, "[TtyWrite] HERE1 \n");
-	// if there the terminal is writing, add current pcb to block queue
-	TracePrintf(0, "terminal[tty_id]->term_writing is  %d\n", terminal[tty_id]->term_writing);
-    if (terminal[tty_id]->term_writing == 1) {
-    	TracePrintf(0, "if there the terminal is writing \n");
-    	// add to block queue
-    	linkedList_add(tty_id+8, current_pcb);
-    	if (ready_q_head != NULL) {
-    		TracePrintf(0, "[TtyWrite] ContextSwitch1 \n");
-    		ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, linkedList_remove(ReadyQueue));
-    	} else {
-    		TracePrintf(0, "[TtyWrite] ContextSwitch2 \n");
-    		ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, idle_pcb);
-    	}
-    	
-    }
-    TracePrintf(0, "[TtyWrite] HERE2 \n");
-    // otherwise ttyTransmit
-    terminal[tty_id]->term_writing = 1;
-    char *bufTemp = (char*) malloc(TERMINAL_MAX_LINE * sizeof(char));
-    memcpy(bufTemp, buf, len);
-    TracePrintf(0, "[TtyWrite] Before TtyTransmit \n");
-    TtyTransmit(tty_id, bufTemp, len);
-    TracePrintf(0, "[TtyWrite] After TtyTransmit \n");
-	// if (ready_q_head != NULL) {
-	// 	TracePrintf(0, "[TtyWrite] ContextSwitch3 \n");
-	// 	ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, linkedList_remove(ReadyQueue));
-	// } else {
-	// 	TracePrintf(0, "[TtyWrite] ContextSwitch4 \n");
-	// 	if (ready_q_head == NULL) {
-	// 		TracePrintf(0, "[TtyWrite] ready_q_head IS NULLLLLLL \n");
-	// 	}
-		
-	// 	ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, idle_pcb);
-	// }
-	TracePrintf(0, "[TtyWrite] DONE \n");    
-    //ContextSwitch(MySwitchFunc, &(current_pcb -> ctx), (void *) current_pcb, linkedList_remove(ReadyQueue));
-    return len;
-}
